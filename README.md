@@ -69,9 +69,11 @@ python bulk_update_posts.py --url https://staging.example.com --post-type post
 ```
 
 If `--basic-auth-username` is set but no password is given, you'll be
-prompted for one securely. These credentials are embedded into every
-navigated URL (`https://user:pass@host/...`) so the browser can pass the
-Basic Auth challenge before the WordPress login form even loads.
+prompted for one securely. These credentials are sent as an `Authorization`
+header on every request via Chrome DevTools Protocol (set once at startup),
+not embedded in the URL — modern Chrome blocks/strips `user:pass@host` URLs
+on top-level navigation as an anti-phishing measure, so that approach
+silently fails to authenticate.
 
 ### WordPress in a subdirectory
 

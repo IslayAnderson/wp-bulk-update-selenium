@@ -12,11 +12,12 @@ actually gets saved.
 """
 
 import argparse
+import base64
 import getpass
 import os
 import sys
 import time
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -30,27 +31,24 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 
-def inject_basic_auth(url: str, basic_auth: tuple[str, str] | None) -> str:
-    """Embeds HTTP Basic Auth credentials into a URL's netloc (user:pass@host),
-    e.g. for a staging site sitting behind an .htpasswd prompt in front of WordPress
-    itself. Once Chrome accepts them for an origin it caches them for the session,
-    so later navigations to the same origin don't strictly need this, but applying
-    it on every request keeps things robust across origin/redirect changes."""
+def apply_basic_auth(driver, basic_auth: tuple[str, str] | None) -> None:
+    """Sets an HTTP Basic Auth header via CDP for every request the browser makes.
+
+    Embedding credentials in the URL (user:pass@host) is unreliable on modern
+    Chrome: it's blocked/stripped on top-level navigation as an anti-phishing
+    measure, so it silently fails to authenticate. Setting the Authorization
+    header directly bypasses that entirely and applies for the rest of the
+    session, so callers only need to call this once, up front.
+    """
     if not basic_auth:
-        return url
+        return
 
     username, password = basic_auth
-    parts = urlsplit(url)
-    host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
-
-    creds = quote(username, safe="")
-    if password:
-        creds += ":" + quote(password, safe="")
-
-    netloc = f"{creds}@{host}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    driver.execute_cdp_cmd("Network.enable", {})
+    driver.execute_cdp_cmd(
+        "Network.setExtraHTTPHeaders", {"headers": {"Authorization": f"Basic {token}"}}
+    )
 
 
 def build_driver(headless: bool) -> webdriver.Chrome:
@@ -62,15 +60,8 @@ def build_driver(headless: bool) -> webdriver.Chrome:
     return webdriver.Chrome(options=options)
 
 
-def login(
-    driver,
-    base_url: str,
-    username: str,
-    password: str,
-    wait: WebDriverWait,
-    basic_auth: tuple[str, str] | None = None,
-) -> None:
-    driver.get(inject_basic_auth(urljoin(base_url, "wp-login.php"), basic_auth))
+def login(driver, base_url: str, username: str, password: str, wait: WebDriverWait) -> None:
+    driver.get(urljoin(base_url, "wp-login.php"))
 
     # Use the `name` attributes rather than ids/labels: WP core always renders
     # name="log"/name="pwd"/name="wp-submit" on the login form even when a theme
@@ -95,18 +86,14 @@ def login(
 
 
 def collect_edit_urls(
-    driver,
-    base_url: str,
-    post_type: str,
-    wait: WebDriverWait,
-    basic_auth: tuple[str, str] | None = None,
+    driver, base_url: str, post_type: str, wait: WebDriverWait
 ) -> list[str]:
     edit_urls: list[str] = []
     page = 1
 
     while True:
         list_url = f"{urljoin(base_url, 'wp-admin/edit.php')}?post_type={post_type}&paged={page}"
-        driver.get(inject_basic_auth(list_url, basic_auth))
+        driver.get(list_url)
 
         try:
             wait.until(
@@ -229,13 +216,9 @@ def wait_for_save(driver, editor_kind: str, wait: WebDriverWait) -> bool:
 
 
 def update_post(
-    driver,
-    edit_url: str,
-    wait: WebDriverWait,
-    acf_options: dict | None = None,
-    basic_auth: tuple[str, str] | None = None,
+    driver, edit_url: str, wait: WebDriverWait, acf_options: dict | None = None
 ) -> tuple[bool, bool | None]:
-    driver.get(inject_basic_auth(edit_url, basic_auth))
+    driver.get(edit_url)
     wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
     acf_ok = None
@@ -312,10 +295,11 @@ def main() -> int:
     wait = WebDriverWait(driver, 20)
 
     try:
-        login(driver, base_url, args.username, args.password, wait, basic_auth)
+        apply_basic_auth(driver, basic_auth)
+        login(driver, base_url, args.username, args.password, wait)
         print("Logged in.")
 
-        edit_urls = collect_edit_urls(driver, base_url, args.post_type, wait, basic_auth)
+        edit_urls = collect_edit_urls(driver, base_url, args.post_type, wait)
         if args.limit:
             edit_urls = edit_urls[: args.limit]
 
@@ -337,7 +321,7 @@ def main() -> int:
         for i, url in enumerate(edit_urls, start=1):
             print(f"[{i}/{len(edit_urls)}] Updating {url}")
             try:
-                ok, acf_ok = update_post(driver, url, wait, acf_options, basic_auth)
+                ok, acf_ok = update_post(driver, url, wait, acf_options)
                 if acf_options and not acf_ok:
                     print("  -> warning: could not locate/fill the ACF field")
                 if ok:
