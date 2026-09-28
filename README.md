@@ -55,6 +55,24 @@ python bulk_update_posts.py --url https://example.com --post-type post
 
 If neither is supplied you'll be prompted (password entry is hidden).
 
+### HTTP Basic Auth
+
+If the site (e.g. a staging server) sits behind an `.htpasswd`-style Basic
+Auth prompt in front of WordPress itself, supply those separate credentials
+with `--basic-auth-username`/`--basic-auth-password`, or via environment
+variables:
+
+```bash
+export BASIC_AUTH_USERNAME=staging
+export BASIC_AUTH_PASSWORD='...'
+python bulk_update_posts.py --url https://staging.example.com --post-type post
+```
+
+If `--basic-auth-username` is set but no password is given, you'll be
+prompted for one securely. These credentials are embedded into every
+navigated URL (`https://user:pass@host/...`) so the browser can pass the
+Basic Auth challenge before the WordPress login form even loads.
+
 ### Options
 
 | Flag | Default | Description |
@@ -62,6 +80,8 @@ If neither is supplied you'll be prompted (password entry is hidden).
 | `--url` | *(required)* | Site base URL, e.g. `https://example.com` |
 | `--username` | `$WP_USERNAME` or prompt | WordPress username |
 | `--password` | `$WP_PASSWORD` or prompt | WordPress password |
+| `--basic-auth-username` | `$BASIC_AUTH_USERNAME` | Username for an HTTP Basic Auth prompt in front of the site |
+| `--basic-auth-password` | `$BASIC_AUTH_PASSWORD` or prompt | Password for HTTP Basic Auth |
 | `--post-type` | `post` | Post type slug (`post`, `page`, or a custom type) |
 | `--headless` | off | Run Chrome headless |
 | `--delay` | `1.5` | Seconds to pause between posts |

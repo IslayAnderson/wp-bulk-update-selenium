@@ -16,7 +16,7 @@ import getpass
 import os
 import sys
 import time
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -30,6 +30,29 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 
+def inject_basic_auth(url: str, basic_auth: tuple[str, str] | None) -> str:
+    """Embeds HTTP Basic Auth credentials into a URL's netloc (user:pass@host),
+    e.g. for a staging site sitting behind an .htpasswd prompt in front of WordPress
+    itself. Once Chrome accepts them for an origin it caches them for the session,
+    so later navigations to the same origin don't strictly need this, but applying
+    it on every request keeps things robust across origin/redirect changes."""
+    if not basic_auth:
+        return url
+
+    username, password = basic_auth
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+
+    creds = quote(username, safe="")
+    if password:
+        creds += ":" + quote(password, safe="")
+
+    netloc = f"{creds}@{host}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def build_driver(headless: bool) -> webdriver.Chrome:
     options = Options()
     if headless:
@@ -39,8 +62,15 @@ def build_driver(headless: bool) -> webdriver.Chrome:
     return webdriver.Chrome(options=options)
 
 
-def login(driver, base_url: str, username: str, password: str, wait: WebDriverWait) -> None:
-    driver.get(urljoin(base_url, "wp-login.php"))
+def login(
+    driver,
+    base_url: str,
+    username: str,
+    password: str,
+    wait: WebDriverWait,
+    basic_auth: tuple[str, str] | None = None,
+) -> None:
+    driver.get(inject_basic_auth(urljoin(base_url, "wp-login.php"), basic_auth))
 
     wait.until(EC.presence_of_element_located((By.ID, "user_login"))).send_keys(username)
     driver.find_element(By.ID, "user_pass").send_keys(password)
@@ -57,13 +87,19 @@ def login(driver, base_url: str, username: str, password: str, wait: WebDriverWa
         raise RuntimeError(f"Login failed{': ' + error_text if error_text else ''}")
 
 
-def collect_edit_urls(driver, base_url: str, post_type: str, wait: WebDriverWait) -> list[str]:
+def collect_edit_urls(
+    driver,
+    base_url: str,
+    post_type: str,
+    wait: WebDriverWait,
+    basic_auth: tuple[str, str] | None = None,
+) -> list[str]:
     edit_urls: list[str] = []
     page = 1
 
     while True:
         list_url = f"{urljoin(base_url, 'wp-admin/edit.php')}?post_type={post_type}&paged={page}"
-        driver.get(list_url)
+        driver.get(inject_basic_auth(list_url, basic_auth))
 
         try:
             wait.until(
@@ -186,9 +222,13 @@ def wait_for_save(driver, editor_kind: str, wait: WebDriverWait) -> bool:
 
 
 def update_post(
-    driver, edit_url: str, wait: WebDriverWait, acf_options: dict | None = None
+    driver,
+    edit_url: str,
+    wait: WebDriverWait,
+    acf_options: dict | None = None,
+    basic_auth: tuple[str, str] | None = None,
 ) -> tuple[bool, bool | None]:
-    driver.get(edit_url)
+    driver.get(inject_basic_auth(edit_url, basic_auth))
     wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
     acf_ok = None
@@ -207,6 +247,16 @@ def main() -> int:
     parser.add_argument("--url", required=True, help="Site base URL, e.g. https://example.com")
     parser.add_argument("--username", default=os.environ.get("WP_USERNAME"))
     parser.add_argument("--password", default=os.environ.get("WP_PASSWORD"))
+    parser.add_argument(
+        "--basic-auth-username",
+        default=os.environ.get("BASIC_AUTH_USERNAME"),
+        help="Username for an HTTP Basic Auth prompt in front of the site (e.g. staging .htpasswd)",
+    )
+    parser.add_argument(
+        "--basic-auth-password",
+        default=os.environ.get("BASIC_AUTH_PASSWORD"),
+        help="Password for HTTP Basic Auth (prompted securely if --basic-auth-username is set but this isn't)",
+    )
     parser.add_argument("--post-type", default="post", help="Post type slug (post, page, or a custom type)")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--delay", type=float, default=1.5, help="Seconds to pause between posts")
@@ -235,16 +285,22 @@ def main() -> int:
     if not args.password:
         args.password = getpass.getpass("WordPress password: ")
 
+    basic_auth = None
+    if args.basic_auth_username:
+        if not args.basic_auth_password:
+            args.basic_auth_password = getpass.getpass("Basic Auth password: ")
+        basic_auth = (args.basic_auth_username, args.basic_auth_password)
+
     base_url = args.url if args.url.endswith("/") else args.url + "/"
 
     driver = build_driver(args.headless)
     wait = WebDriverWait(driver, 20)
 
     try:
-        login(driver, base_url, args.username, args.password, wait)
+        login(driver, base_url, args.username, args.password, wait, basic_auth)
         print("Logged in.")
 
-        edit_urls = collect_edit_urls(driver, base_url, args.post_type, wait)
+        edit_urls = collect_edit_urls(driver, base_url, args.post_type, wait, basic_auth)
         if args.limit:
             edit_urls = edit_urls[: args.limit]
 
@@ -266,7 +322,7 @@ def main() -> int:
         for i, url in enumerate(edit_urls, start=1):
             print(f"[{i}/{len(edit_urls)}] Updating {url}")
             try:
-                ok, acf_ok = update_post(driver, url, wait, acf_options)
+                ok, acf_ok = update_post(driver, url, wait, acf_options, basic_auth)
                 if acf_options and not acf_ok:
                     print("  -> warning: could not locate/fill the ACF field")
                 if ok:
