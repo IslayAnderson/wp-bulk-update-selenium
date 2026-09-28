@@ -177,14 +177,21 @@ def get_post_title(driver) -> str | None:
 
 
 def set_field_value(driver, element, value: str) -> None:
-    element.clear()
-    element.send_keys(value)
-    # ACF's own JS (conditional logic, validation, etc.) listens for these events,
-    # which send_keys doesn't reliably fire on every field type.
+    """Sets a field's value via JS rather than clear()/send_keys(). The target
+    field commonly sits inside an ACF tab pane that isn't the active one (tab
+    panes are hidden with display:none until selected), and Selenium's
+    interactability checks reject hidden elements even when we don't care about
+    it being visually visible — we just need WordPress to save the value. JS
+    can set .value on a hidden element with no such restriction; the
+    input/change events afterwards are what ACF's own JS (conditional logic,
+    validation) listens for.
+    """
     driver.execute_script(
+        "arguments[0].value = arguments[1];"
         "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));"
         "arguments[0].dispatchEvent(new Event('change', {bubbles: true}));",
         element,
+        value,
     )
 
 
@@ -199,11 +206,14 @@ def copy_title_into_acf_field(
         return False
 
     if tab_selector:
+        # Best-effort only: clicking the tab is no longer required for the value
+        # to be saved (set_field_value below writes it via JS regardless of
+        # visibility), so any failure here is just cosmetic and safe to ignore.
         try:
             tab = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, tab_selector)))
             safe_click(driver, tab)
-        except TimeoutException:
-            pass  # tab may already be active, or not present on this particular post
+        except (TimeoutException, WebDriverException):
+            pass
 
     try:
         field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, field_selector)))
@@ -215,14 +225,15 @@ def copy_title_into_acf_field(
 
 
 def click_update_button(driver, wait: WebDriverWait) -> str:
-    """Handles both the classic editor and the block (Gutenberg) editor."""
-    try:
-        btn = wait.until(EC.element_to_be_clickable((By.ID, "publish")))
-        safe_click(driver, btn)
-        return "classic"
-    except TimeoutException:
-        pass
+    """Handles both the classic editor and the block (Gutenberg) editor.
 
+    Gutenberg is checked first: WordPress still renders a hidden classic-editor
+    compatibility #publish button on block-editor pages (for plugin/back-compat
+    reasons), and it can pass Selenium's is-displayed/is-enabled checks while
+    still being un-clickable in practice (off-screen or zero-size), which
+    raises ElementNotInteractable. Trying the more specific Gutenberg selectors
+    first avoids matching that decoy on a modern (block editor) site.
+    """
     gutenberg_selectors = [
         ".editor-post-publish-button__button",
         "button.editor-post-publish-button",
@@ -235,6 +246,13 @@ def click_update_button(driver, wait: WebDriverWait) -> str:
             return "gutenberg"
         except TimeoutException:
             continue
+
+    try:
+        btn = wait.until(EC.element_to_be_clickable((By.ID, "publish")))
+        safe_click(driver, btn)
+        return "classic"
+    except TimeoutException:
+        pass
 
     raise RuntimeError("Could not find an Update/Publish button on this edit screen")
 

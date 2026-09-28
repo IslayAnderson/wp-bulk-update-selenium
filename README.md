@@ -106,10 +106,19 @@ python bulk_update_posts.py --url https://example.com --wp-path wp --post-type p
 
 ### ACF title copy
 
-`--copy-title-to-acf` reads the post title (from either editor), clicks the
-ACF tab that contains the target field (ACF hides fields on inactive tabs),
-fills the field, and fires `input`/`change` events so ACF's own JS
-(conditional logic, validation) picks it up — all before the Update click.
+`--copy-title-to-acf` reads the post title (from either editor), best-effort
+clicks the ACF tab that contains the target field (purely cosmetic — see
+below), then sets the field's value via JavaScript and fires `input`/`change`
+events so ACF's own JS (conditional logic, validation) picks it up — all
+before the Update click.
+
+The value is set via JS rather than simulated typing because
+`--acf-tab-selector` (as given) targets *whichever* tab happens to already be
+active, not necessarily the one the target field lives on — if it's the
+wrong tab, the field's pane stays hidden (`display:none`), and a real
+click/type on a hidden element throws `ElementNotInteractable`. Setting
+`.value` directly works regardless of which tab is showing, so the tab click
+failing (or being a no-op) no longer breaks the run.
 
 The default selectors target a specific clone field on the `member_news`
 post type:
