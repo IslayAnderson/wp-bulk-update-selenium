@@ -72,9 +72,16 @@ def login(
 ) -> None:
     driver.get(inject_basic_auth(urljoin(base_url, "wp-login.php"), basic_auth))
 
-    wait.until(EC.presence_of_element_located((By.ID, "user_login"))).send_keys(username)
-    driver.find_element(By.ID, "user_pass").send_keys(password)
-    driver.find_element(By.ID, "wp-submit").click()
+    # Use the `name` attributes rather than ids/labels: WP core always renders
+    # name="log"/name="pwd"/name="wp-submit" on the login form even when a theme
+    # restyles the markup around it (custom labels, wrapper classes, etc.).
+    wait.until(EC.presence_of_element_located((By.NAME, "log"))).send_keys(username)
+    driver.find_element(By.NAME, "pwd").send_keys(password)
+
+    try:
+        driver.find_element(By.NAME, "wp-submit").click()
+    except NoSuchElementException:
+        driver.find_element(By.CSS_SELECTOR, "input[type='submit'], button[type='submit']").click()
 
     try:
         wait.until(EC.presence_of_element_located((By.ID, "wpadminbar")))
