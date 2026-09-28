@@ -25,6 +25,7 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
     NoSuchElementException,
+    StaleElementReferenceException,
     TimeoutException,
     WebDriverException,
 )
@@ -251,43 +252,38 @@ def copy_title_into_acf_field(
     return True
 
 
-def click_update_button(driver, wait: WebDriverWait, candidate_timeout: float = 6.0) -> str:
+def click_update_button(driver, wait: WebDriverWait, timeout: float = 15.0) -> str:
     """Handles both the classic editor and the block (Gutenberg) editor.
 
-    Gutenberg is checked first: WordPress still renders a hidden classic-editor
-    compatibility #publish button on block-editor pages (for plugin/back-compat
-    reasons), and it can pass Selenium's is-displayed/is-enabled checks while
-    still being un-clickable in practice (off-screen or zero-size), which
-    raises ElementNotInteractable. Trying the more specific Gutenberg selectors
-    first avoids matching that decoy on a modern (block editor) site.
-
-    Each candidate gets its own short wait rather than the caller's full wait
-    (which can be 20s+): with 4 candidates, reusing the full wait for each one
-    that doesn't match means up to ~80s of total silence before anything is
-    printed, which looks identical to a genuine hang from the outside.
+    All candidate selectors are checked together on every poll tick, rather
+    than giving each one its own full wait in sequence — trying them one at a
+    time in a fixed order means whichever editor the site *doesn't* use always
+    burns its full timeout first before falling through to the one that
+    actually works. Checking them together means whichever is genuinely
+    present matches almost immediately, regardless of order.
     """
-    candidate_wait = WebDriverWait(driver, candidate_timeout)
-    gutenberg_selectors = [
-        ".editor-post-publish-button__button",
-        "button.editor-post-publish-button",
-        "button[aria-label='Update']",
+    candidates = [
+        (By.ID, "publish", "classic"),
+        (By.CSS_SELECTOR, ".editor-post-publish-button__button", "gutenberg"),
+        (By.CSS_SELECTOR, "button.editor-post-publish-button", "gutenberg"),
+        (By.CSS_SELECTOR, "button[aria-label='Update']", "gutenberg"),
     ]
-    for selector in gutenberg_selectors:
-        try:
-            btn = candidate_wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-            safe_click(driver, btn)
-            return "gutenberg"
-        except TimeoutException:
-            continue
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for by, selector, kind in candidates:
+            try:
+                el = driver.find_element(by, selector)
+            except NoSuchElementException:
+                continue
+            try:
+                if el.is_displayed() and el.is_enabled():
+                    safe_click(driver, el)
+                    return kind
+            except StaleElementReferenceException:
+                continue
+        time.sleep(0.3)
 
-    try:
-        btn = candidate_wait.until(EC.element_to_be_clickable((By.ID, "publish")))
-        safe_click(driver, btn)
-        return "classic"
-    except TimeoutException:
-        pass
-
-    raise RuntimeError("Could not find an Update/Publish button on this edit screen")
+    raise RuntimeError("Could not find a clickable Update/Publish button on this edit screen")
 
 
 def wait_for_save(driver, editor_kind: str, wait: WebDriverWait) -> bool:
