@@ -73,6 +73,16 @@ prompted for one securely. These credentials are embedded into every
 navigated URL (`https://user:pass@host/...`) so the browser can pass the
 Basic Auth challenge before the WordPress login form even loads.
 
+### WordPress in a subdirectory
+
+If the dashboard isn't at the site root — e.g. `https://example.com/wp/wp-admin/`
+instead of `https://example.com/wp-admin/` — pass the subdirectory with
+`--wp-path` (or `$WP_PATH`) rather than baking it into `--url`:
+
+```bash
+python bulk_update_posts.py --url https://example.com --wp-path wp --post-type post
+```
+
 ### Options
 
 | Flag | Default | Description |
@@ -82,6 +92,7 @@ Basic Auth challenge before the WordPress login form even loads.
 | `--password` | `$WP_PASSWORD` or prompt | WordPress password |
 | `--basic-auth-username` | `$BASIC_AUTH_USERNAME` | Username for an HTTP Basic Auth prompt in front of the site |
 | `--basic-auth-password` | `$BASIC_AUTH_PASSWORD` or prompt | Password for HTTP Basic Auth |
+| `--wp-path` | `$WP_PATH` or empty | Path prefix where WordPress core lives, e.g. `wp` |
 | `--post-type` | `post` | Post type slug (`post`, `page`, or a custom type) |
 | `--headless` | off | Run Chrome headless |
 | `--delay` | `1.5` | Seconds to pause between posts |

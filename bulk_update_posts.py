@@ -264,6 +264,12 @@ def main() -> int:
         default=os.environ.get("BASIC_AUTH_PASSWORD"),
         help="Password for HTTP Basic Auth (prompted securely if --basic-auth-username is set but this isn't)",
     )
+    parser.add_argument(
+        "--wp-path",
+        default=os.environ.get("WP_PATH", ""),
+        help="Path prefix where WordPress core lives under --url, e.g. 'wp' if the "
+        "dashboard is at https://example.com/wp/wp-admin/ instead of the site root",
+    )
     parser.add_argument("--post-type", default="post", help="Post type slug (post, page, or a custom type)")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--delay", type=float, default=1.5, help="Seconds to pause between posts")
@@ -299,6 +305,8 @@ def main() -> int:
         basic_auth = (args.basic_auth_username, args.basic_auth_password)
 
     base_url = args.url if args.url.endswith("/") else args.url + "/"
+    if args.wp_path:
+        base_url = urljoin(base_url, args.wp_path.strip("/") + "/")
 
     driver = build_driver(args.headless)
     wait = WebDriverWait(driver, 20)
