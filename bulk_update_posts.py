@@ -15,12 +15,15 @@ import argparse
 import base64
 import getpass
 import os
+import re
 import sys
 import time
 from urllib.parse import urljoin
 
 from selenium import webdriver
 from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
     NoSuchElementException,
     TimeoutException,
     WebDriverException,
@@ -60,6 +63,28 @@ def build_driver(headless: bool) -> webdriver.Chrome:
     return webdriver.Chrome(options=options)
 
 
+def safe_click(driver, element) -> None:
+    """Clicks an element, falling back to a JS click if something is covering it
+    (an overlay, a stale layout reflow, etc.) that a real click can't get through."""
+    try:
+        element.click()
+    except (ElementNotInteractableException, ElementClickInterceptedException):
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        driver.execute_script("arguments[0].click();", element)
+
+
+def post_is_locked(driver) -> bool:
+    """True if WordPress is showing its 'this post is being edited by another
+    user' takeover dialog. That dialog visually covers the real Update button,
+    which is why a click on it raises ElementNotInteractable rather than just
+    not finding it — the button is still there in the DOM, just unreachable."""
+    try:
+        dialog = driver.find_element(By.ID, "post-lock-dialog")
+        return dialog.is_displayed()
+    except NoSuchElementException:
+        return False
+
+
 def login(driver, base_url: str, username: str, password: str, wait: WebDriverWait) -> None:
     driver.get(urljoin(base_url, "wp-login.php"))
 
@@ -70,9 +95,10 @@ def login(driver, base_url: str, username: str, password: str, wait: WebDriverWa
     driver.find_element(By.NAME, "pwd").send_keys(password)
 
     try:
-        driver.find_element(By.NAME, "wp-submit").click()
+        submit = driver.find_element(By.NAME, "wp-submit")
     except NoSuchElementException:
-        driver.find_element(By.CSS_SELECTOR, "input[type='submit'], button[type='submit']").click()
+        submit = driver.find_element(By.CSS_SELECTOR, "input[type='submit'], button[type='submit']")
+    safe_click(driver, submit)
 
     try:
         wait.until(EC.presence_of_element_located((By.ID, "wpadminbar")))
@@ -87,8 +113,12 @@ def login(driver, base_url: str, username: str, password: str, wait: WebDriverWa
 
 def collect_edit_urls(
     driver, base_url: str, post_type: str, wait: WebDriverWait
-) -> list[str]:
+) -> tuple[list[str], int | None]:
+    """Returns (edit_urls, reported_total). reported_total comes from WordPress's
+    own "N items" count in the list table header, when available, so callers can
+    tell if the crawl stopped short of everything the site says exists."""
     edit_urls: list[str] = []
+    reported_total: int | None = None
     page = 1
 
     while True:
@@ -101,6 +131,15 @@ def collect_edit_urls(
             )
         except TimeoutException:
             break
+
+        if reported_total is None:
+            try:
+                displaying_num = driver.find_element(By.CSS_SELECTOR, ".displaying-num").text
+                match = re.search(r"[\d,]+", displaying_num)
+                if match:
+                    reported_total = int(match.group().replace(",", ""))
+            except NoSuchElementException:
+                pass
 
         rows = driver.find_elements(By.CSS_SELECTOR, "#the-list tr")
         if not rows:
@@ -119,7 +158,7 @@ def collect_edit_urls(
             break
         page += 1
 
-    return edit_urls
+    return edit_urls, reported_total
 
 
 def get_post_title(driver) -> str | None:
@@ -162,7 +201,7 @@ def copy_title_into_acf_field(
     if tab_selector:
         try:
             tab = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, tab_selector)))
-            tab.click()
+            safe_click(driver, tab)
         except TimeoutException:
             pass  # tab may already be active, or not present on this particular post
 
@@ -179,7 +218,7 @@ def click_update_button(driver, wait: WebDriverWait) -> str:
     """Handles both the classic editor and the block (Gutenberg) editor."""
     try:
         btn = wait.until(EC.element_to_be_clickable((By.ID, "publish")))
-        btn.click()
+        safe_click(driver, btn)
         return "classic"
     except TimeoutException:
         pass
@@ -192,7 +231,7 @@ def click_update_button(driver, wait: WebDriverWait) -> str:
     for selector in gutenberg_selectors:
         try:
             btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-            btn.click()
+            safe_click(driver, btn)
             return "gutenberg"
         except TimeoutException:
             continue
@@ -220,6 +259,11 @@ def update_post(
 ) -> tuple[bool, bool | None]:
     driver.get(edit_url)
     wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+    if post_is_locked(driver):
+        raise RuntimeError(
+            "Post is locked (currently being edited by another user) — skipped rather than taking it over"
+        )
 
     acf_ok = None
     if acf_options:
@@ -299,11 +343,19 @@ def main() -> int:
         login(driver, base_url, args.username, args.password, wait)
         print("Logged in.")
 
-        edit_urls = collect_edit_urls(driver, base_url, args.post_type, wait)
+        edit_urls, reported_total = collect_edit_urls(driver, base_url, args.post_type, wait)
+        crawled_count = len(edit_urls)
         if args.limit:
             edit_urls = edit_urls[: args.limit]
 
-        print(f"Found {len(edit_urls)} '{args.post_type}' post(s).")
+        print(f"Found {crawled_count} '{args.post_type}' post(s).")
+        if reported_total is not None and reported_total != crawled_count:
+            print(
+                f"  -> warning: WordPress's list table reports {reported_total} item(s) "
+                f"in this view, but the crawl collected {crawled_count}. Check the post "
+                "list's status/filter tabs (All/Published/Draft/Trash) and pagination "
+                "before running for real — this crawl may have stopped early."
+            )
 
         if args.dry_run:
             for url in edit_urls:

@@ -141,3 +141,12 @@ right input.
 - If a post's tab layout or ACF field markup differs from the defaults,
   `click_update_button`/`copy_title_into_acf_field` will log a warning for
   that post and move on rather than stopping the whole run.
+- If WordPress's own "N items" count on the post list doesn't match what the
+  crawl collected, a warning is printed after the "Found N posts" line — a
+  mismatch usually means the list is filtered to a different status/view
+  (All/Published/Draft/Trash) than you expect, or that pagination stopped
+  earlier than it should have.
+- If a post is locked (someone else has it open in the editor), WordPress
+  shows a takeover dialog over the real Update button. The script detects
+  this and skips that post with a clear warning rather than clicking through
+  it and taking over someone else's edit session.
