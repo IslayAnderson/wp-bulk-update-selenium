@@ -112,19 +112,17 @@ below), then sets the field's value via JavaScript and fires `input`/`change`
 events so ACF's own JS (conditional logic, validation) picks it up — all
 before the Update click.
 
-The value is set via JS rather than simulated typing because
-`--acf-tab-selector` (as given) targets *whichever* tab happens to already be
-active, not necessarily the one the target field lives on — if it's the
-wrong tab, the field's pane stays hidden (`display:none`), and a real
-click/type on a hidden element throws `ElementNotInteractable`. Setting
-`.value` directly works regardless of which tab is showing, so the tab click
-failing (or being a no-op) no longer breaks the run.
+The value is set via JS rather than simulated typing because a real
+click/type on a field sitting in a non-active ACF tab pane (`display:none`)
+throws `ElementNotInteractable`. Setting `.value` directly works regardless
+of which tab is showing, so the tab click is now purely cosmetic and its
+failure no longer breaks the run.
 
-The default selectors target a specific clone field on the `member_news`
-post type:
+The default selectors target the `member_news_hero_clone` field on the
+`member_news` post type's "Hero" tab (2nd tab in the sidebar):
 
 ```
---acf-tab-selector "#acf-cpt-member-news > div.inside.acf-fields.-top.-sidebar > div.acf-tab-wrap.-left > ul > li.active > a"
+--acf-tab-selector "#acf-cpt-member-news > div.inside.acf-fields.-top.-sidebar > div.acf-tab-wrap.-left > ul > li:nth-child(2) > a"
 --acf-field-selector "#acf-field_member_news_hero_clone-field_member_news_hero_clone_hero_member_news_title"
 ```
 
@@ -157,5 +155,16 @@ right input.
   earlier than it should have.
 - If a post is locked (someone else has it open in the editor), WordPress
   shows a takeover dialog over the real Update button. The script detects
-  this and skips that post with a clear warning rather than clicking through
-  it and taking over someone else's edit session.
+  this (polling briefly, since the lock check runs async) and skips that
+  post with a clear warning rather than clicking through it and taking over
+  someone else's edit session.
+- Editing a post's fields via JS can mark the block editor as having unsaved
+  changes. If the browser then navigates to the next post before that's
+  resolved, WordPress's "Leave site? Changes you made may not be saved"
+  dialog would otherwise block navigation forever with no output. Chrome is
+  configured to auto-accept any such prompt, and the page's own unload
+  handler is cleared before every navigation as a second line of defense —
+  so the run should never silently hang here.
+- Progress lines (`looking for Update button...`, `clicked Update...`) print
+  as each step happens, so a genuinely slow step is visible rather than
+  looking identical to a hang.

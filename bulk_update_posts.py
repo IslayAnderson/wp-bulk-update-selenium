@@ -59,8 +59,24 @@ def build_driver(headless: bool) -> webdriver.Chrome:
     if headless:
         options.add_argument("--headless=new")
     options.add_argument("--window-size=1400,1000")
+    # If a page has unsaved changes (e.g. our own JS field edits marking the
+    # block editor "dirty"), navigating away triggers a native "Leave site?"
+    # confirm dialog. Selenium then blocks on that dialog forever since nothing
+    # answers it. "accept" auto-confirms any such prompt so navigation always
+    # completes instead of hanging with no output.
+    options.set_capability("unhandledPromptBehavior", "accept")
     # Selenium 4.6+ resolves the matching chromedriver automatically.
     return webdriver.Chrome(options=options)
+
+
+def navigate(driver, url: str) -> None:
+    """driver.get(), but first clears any beforeunload handler on the current
+    page as a second line of defense against the same "Leave site?" hang."""
+    try:
+        driver.execute_script("window.onbeforeunload = null;")
+    except WebDriverException:
+        pass
+    driver.get(url)
 
 
 def safe_click(driver, element) -> None:
@@ -73,20 +89,31 @@ def safe_click(driver, element) -> None:
         driver.execute_script("arguments[0].click();", element)
 
 
-def post_is_locked(driver) -> bool:
+def post_is_locked(driver, poll_seconds: float = 3.0) -> bool:
     """True if WordPress is showing its 'this post is being edited by another
     user' takeover dialog. That dialog visually covers the real Update button,
     which is why a click on it raises ElementNotInteractable rather than just
-    not finding it — the button is still there in the DOM, just unreachable."""
-    try:
-        dialog = driver.find_element(By.ID, "post-lock-dialog")
-        return dialog.is_displayed()
-    except NoSuchElementException:
-        return False
+    not finding it — the button is still there in the DOM, just unreachable.
+
+    WordPress determines lock status via an async heartbeat check, so the
+    dialog can appear a moment after the rest of the page has loaded — polling
+    briefly here catches that instead of only checking the instant the page
+    first becomes present.
+    """
+    deadline = time.time() + poll_seconds
+    while time.time() < deadline:
+        try:
+            dialog = driver.find_element(By.ID, "post-lock-dialog")
+            if dialog.is_displayed():
+                return True
+        except NoSuchElementException:
+            pass
+        time.sleep(0.5)
+    return False
 
 
 def login(driver, base_url: str, username: str, password: str, wait: WebDriverWait) -> None:
-    driver.get(urljoin(base_url, "wp-login.php"))
+    navigate(driver, urljoin(base_url, "wp-login.php"))
 
     # Use the `name` attributes rather than ids/labels: WP core always renders
     # name="log"/name="pwd"/name="wp-submit" on the login form even when a theme
@@ -123,7 +150,7 @@ def collect_edit_urls(
 
     while True:
         list_url = f"{urljoin(base_url, 'wp-admin/edit.php')}?post_type={post_type}&paged={page}"
-        driver.get(list_url)
+        navigate(driver, list_url)
 
         try:
             wait.until(
@@ -224,7 +251,7 @@ def copy_title_into_acf_field(
     return True
 
 
-def click_update_button(driver, wait: WebDriverWait) -> str:
+def click_update_button(driver, wait: WebDriverWait, candidate_timeout: float = 6.0) -> str:
     """Handles both the classic editor and the block (Gutenberg) editor.
 
     Gutenberg is checked first: WordPress still renders a hidden classic-editor
@@ -233,7 +260,13 @@ def click_update_button(driver, wait: WebDriverWait) -> str:
     still being un-clickable in practice (off-screen or zero-size), which
     raises ElementNotInteractable. Trying the more specific Gutenberg selectors
     first avoids matching that decoy on a modern (block editor) site.
+
+    Each candidate gets its own short wait rather than the caller's full wait
+    (which can be 20s+): with 4 candidates, reusing the full wait for each one
+    that doesn't match means up to ~80s of total silence before anything is
+    printed, which looks identical to a genuine hang from the outside.
     """
+    candidate_wait = WebDriverWait(driver, candidate_timeout)
     gutenberg_selectors = [
         ".editor-post-publish-button__button",
         "button.editor-post-publish-button",
@@ -241,14 +274,14 @@ def click_update_button(driver, wait: WebDriverWait) -> str:
     ]
     for selector in gutenberg_selectors:
         try:
-            btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
+            btn = candidate_wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
             safe_click(driver, btn)
             return "gutenberg"
         except TimeoutException:
             continue
 
     try:
-        btn = wait.until(EC.element_to_be_clickable((By.ID, "publish")))
+        btn = candidate_wait.until(EC.element_to_be_clickable((By.ID, "publish")))
         safe_click(driver, btn)
         return "classic"
     except TimeoutException:
@@ -275,7 +308,7 @@ def wait_for_save(driver, editor_kind: str, wait: WebDriverWait) -> bool:
 def update_post(
     driver, edit_url: str, wait: WebDriverWait, acf_options: dict | None = None
 ) -> tuple[bool, bool | None]:
-    driver.get(edit_url)
+    navigate(driver, edit_url)
     wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
     if post_is_locked(driver):
@@ -289,7 +322,9 @@ def update_post(
             driver, wait, acf_options.get("tab_selector"), acf_options["field_selector"]
         )
 
+    print("  looking for Update button...", flush=True)
     editor_kind = click_update_button(driver, wait)
+    print(f"  clicked Update ({editor_kind} editor), waiting for save confirmation...", flush=True)
     saved = wait_for_save(driver, editor_kind, wait)
     return saved, acf_ok
 
@@ -327,9 +362,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--acf-tab-selector",
-        default="#acf-cpt-member-news > div.inside.acf-fields.-top.-sidebar > div.acf-tab-wrap.-left > ul > li.active > a",
-        help="CSS selector for the ACF sidebar tab to click before filling the field "
-        "(ACF hides fields on tabs that aren't active)",
+        default="#acf-cpt-member-news > div.inside.acf-fields.-top.-sidebar > div.acf-tab-wrap.-left > ul > li:nth-child(2) > a",
+        help="CSS selector for the ACF sidebar tab (the 'Hero' tab, 2nd in the list) to "
+        "click before filling the field — cosmetic only, the value is set via JS "
+        "regardless of which tab is showing",
     )
     parser.add_argument(
         "--acf-field-selector",
@@ -389,7 +425,7 @@ def main() -> int:
 
         succeeded, failed = 0, 0
         for i, url in enumerate(edit_urls, start=1):
-            print(f"[{i}/{len(edit_urls)}] Updating {url}")
+            print(f"[{i}/{len(edit_urls)}] Updating {url}", flush=True)
             try:
                 ok, acf_ok = update_post(driver, url, wait, acf_options)
                 if acf_options and not acf_ok:
