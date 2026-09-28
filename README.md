@@ -15,9 +15,17 @@ Works with both the classic editor and the block (Gutenberg) editor.
 
 ## Install
 
+Create a virtual environment and install dependencies into it:
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+`.venv/` is already excluded via `.gitignore`. Once installed, run the
+script with that environment active (`source .venv/bin/activate` in any new
+shell before running it — `deactivate` when you're done).
 
 ## Usage
 
