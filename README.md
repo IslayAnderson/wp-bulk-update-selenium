@@ -100,6 +100,7 @@ python bulk_update_posts.py --url https://example.com --wp-path wp --post-type p
 | `--delay` | `1.5` | Seconds to pause between posts |
 | `--limit` | none | Only process the first N posts (useful for testing) |
 | `--dry-run` | off | List posts that would be updated, without clicking Update |
+| `--debug-auth` | off | Print the URL of any request that returns 401 after each page load (to find what triggers a Basic Auth prompt) |
 | `--copy-title-to-acf` | off | Copy the post title into an ACF field before saving |
 | `--acf-tab-selector` | see below | CSS selector for the ACF sidebar tab to click before filling the field |
 | `--acf-field-selector` | see below | CSS selector (usually an `#id`) for the ACF field to fill with the post title |

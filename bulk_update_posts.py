@@ -14,6 +14,7 @@ actually gets saved.
 import argparse
 import base64
 import getpass
+import json
 import os
 import re
 import sys
@@ -49,17 +50,43 @@ def apply_basic_auth(driver, basic_auth: tuple[str, str] | None) -> None:
 
     username, password = basic_auth
     token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    driver.basic_auth_header = f"Basic {token}"
+    send_basic_auth_header(driver)
+
+
+def send_basic_auth_header(driver) -> None:
+    header = getattr(driver, "basic_auth_header", None)
+    if not header:
+        return
     driver.execute_cdp_cmd("Network.enable", {})
-    driver.execute_cdp_cmd(
-        "Network.setExtraHTTPHeaders", {"headers": {"Authorization": f"Basic {token}"}}
-    )
+    driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {"headers": {"Authorization": header}})
 
 
-def build_driver(headless: bool) -> webdriver.Chrome:
+def report_401s(driver) -> None:
+    """Prints the URL of every request that came back 401 since the last call
+    (requires build_driver(debug_auth=True)), to identify which request is
+    triggering a Basic Auth prompt."""
+    try:
+        entries = driver.get_log("performance")
+    except WebDriverException:
+        return
+    for entry in entries:
+        message = json.loads(entry["message"])["message"]
+        if message.get("method") != "Network.responseReceived":
+            continue
+        response = message["params"]["response"]
+        if response.get("status") == 401:
+            sent_auth = any(k.lower() == "authorization" for k in response.get("requestHeaders", {}))
+            print(f"  [debug-auth] 401 from {response['url']} (Authorization sent: {sent_auth})", flush=True)
+
+
+def build_driver(headless: bool, debug_auth: bool = False) -> webdriver.Chrome:
     options = Options()
     if headless:
         options.add_argument("--headless=new")
     options.add_argument("--window-size=1400,1000")
+    if debug_auth:
+        options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     # If a page has unsaved changes (e.g. our own JS field edits marking the
     # block editor "dirty"), navigating away triggers a native "Leave site?"
     # confirm dialog. Selenium then blocks on that dialog forever since nothing
@@ -77,7 +104,12 @@ def navigate(driver, url: str) -> None:
         driver.execute_script("window.onbeforeunload = null;")
     except WebDriverException:
         pass
+    # Re-sent on every navigation in case Chrome dropped it when swapping
+    # renderer processes, rather than relying on the one-time call at startup.
+    send_basic_auth_header(driver)
     driver.get(url)
+    if getattr(driver, "debug_auth", False):
+        report_401s(driver)
 
 
 def safe_click(driver, element) -> None:
@@ -352,6 +384,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N posts (for testing)")
     parser.add_argument("--dry-run", action="store_true", help="List posts that would be updated, without clicking Update")
     parser.add_argument(
+        "--debug-auth",
+        action="store_true",
+        help="Print the URL of any request that returns 401 after each page load, "
+        "to find which request is triggering a Basic Auth prompt",
+    )
+    parser.add_argument(
         "--copy-title-to-acf",
         action="store_true",
         help="Before saving, copy the post title into an ACF field (see --acf-field-selector)",
@@ -385,7 +423,8 @@ def main() -> int:
     if args.wp_path:
         base_url = urljoin(base_url, args.wp_path.strip("/") + "/")
 
-    driver = build_driver(args.headless)
+    driver = build_driver(args.headless, args.debug_auth)
+    driver.debug_auth = args.debug_auth
     wait = WebDriverWait(driver, 20)
 
     try:
