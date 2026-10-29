@@ -354,6 +354,8 @@ def update_post(
     editor_kind = click_update_button(driver, wait)
     print(f"  clicked Update ({editor_kind} editor), waiting for save confirmation...", flush=True)
     saved = wait_for_save(driver, editor_kind, wait)
+    if getattr(driver, "debug_auth", False):
+        report_401s(driver)
     return saved, acf_ok
 
 
