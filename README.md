@@ -55,6 +55,14 @@ python bulk_update_posts.py --url https://example.com --post-type post
 
 If neither is supplied you'll be prompted (password entry is hidden).
 
+Alternatively, copy `.env.example` to `.env` (git-ignored) and fill it in; it's
+loaded automatically on startup. Real environment variables and CLI flags
+take precedence, and any blank value there falls back to the prompt.
+
+```bash
+cp .env.example .env
+```
+
 ### HTTP Basic Auth
 
 If the site (e.g. a staging server) sits behind an `.htpasswd`-style Basic

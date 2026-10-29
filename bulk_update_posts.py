@@ -357,7 +357,25 @@ def update_post(
     return saved, acf_ok
 
 
+def load_dotenv(path: str) -> None:
+    """Loads KEY=VALUE lines from a .env file into os.environ without overriding
+    variables that are already set. Blank values are skipped so they still prompt."""
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                value = value.strip().strip("'\"")
+                if value:
+                    os.environ.setdefault(key.strip(), value)
+    except FileNotFoundError:
+        pass
+
+
 def main() -> int:
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True, help="Site base URL, e.g. https://example.com")
     parser.add_argument("--username", default=os.environ.get("WP_USERNAME"))
