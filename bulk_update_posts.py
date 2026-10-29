@@ -70,14 +70,26 @@ def report_401s(driver) -> None:
         entries = driver.get_log("performance")
     except WebDriverException:
         return
+
+    # A request left waiting on Chrome's sign-in dialog never produces a
+    # completed Network.responseReceived, so match on the early ExtraInfo
+    # events (which do fire for the 401 challenge) and join them by requestId.
+    urls = driver.__dict__.setdefault("debug_request_urls", {})
+    sent_auth: dict[str, bool] = {}
+    found = 0
     for entry in entries:
         message = json.loads(entry["message"])["message"]
-        if message.get("method") != "Network.responseReceived":
-            continue
-        response = message["params"]["response"]
-        if response.get("status") == 401:
-            sent_auth = any(k.lower() == "authorization" for k in response.get("requestHeaders", {}))
-            print(f"  [debug-auth] 401 from {response['url']} (Authorization sent: {sent_auth})", flush=True)
+        method, params = message.get("method"), message.get("params", {})
+        request_id = params.get("requestId")
+        if method == "Network.requestWillBeSent":
+            urls[request_id] = params["request"]["url"]
+        elif method == "Network.requestWillBeSentExtraInfo":
+            sent_auth[request_id] = any(k.lower() == "authorization" for k in params.get("headers", {}))
+        elif method == "Network.responseReceivedExtraInfo" and params.get("statusCode") == 401:
+            found += 1
+            url = urls.get(request_id, "(unknown url)")
+            print(f"  [debug-auth] 401 for {url} (Authorization sent: {sent_auth.get(request_id, 'unknown')})", flush=True)
+    print(f"  [debug-auth] checked {len(entries)} network log entries, {found} were 401", flush=True)
 
 
 def build_driver(headless: bool, debug_auth: bool = False) -> webdriver.Chrome:
