@@ -19,7 +19,7 @@ import os
 import re
 import sys
 import time
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -52,6 +52,24 @@ def apply_basic_auth(driver, basic_auth: tuple[str, str] | None) -> None:
     token = base64.b64encode(f"{username}:{password}".encode()).decode()
     driver.basic_auth_header = f"Basic {token}"
     send_basic_auth_header(driver)
+
+
+def prime_basic_auth(driver, base_url: str, basic_auth: tuple[str, str] | None) -> None:
+    """Seeds Chrome's own HTTP auth cache with one navigation to a
+    user:pass@host URL.
+
+    The Authorization header set via CDP only covers the page's own requests.
+    Web Workers (e.g. Yoast's analysis worker) are separate targets that never
+    get it, so their requests hit the server unauthenticated and Chrome pops a
+    sign-in dialog. Once Chrome has the credentials cached natively it answers
+    those challenges itself. Call this before apply_basic_auth.
+    """
+    if not basic_auth:
+        return
+    parts = urlsplit(urljoin(base_url, "wp-login.php"))
+    host = parts.hostname + (f":{parts.port}" if parts.port else "")
+    creds = quote(basic_auth[0], safe="") + ":" + quote(basic_auth[1], safe="")
+    driver.get(urlunsplit((parts.scheme, f"{creds}@{host}", parts.path, "", "")))
 
 
 def send_basic_auth_header(driver) -> None:
@@ -348,6 +366,20 @@ def click_update_button(driver, wait: WebDriverWait, timeout: float = 15.0) -> s
     raise RuntimeError("Could not find a clickable Update/Publish button on this edit screen")
 
 
+def visible_error_notices(driver) -> list[str]:
+    """Text of any visible ACF validation / WordPress error notices, to explain
+    why a save wasn't confirmed (e.g. ACF blocking the submit on a required field)."""
+    selector = ".acf-error-message, .acf-notice.-error, .notice-error, #message.error, .acf-error"
+    texts = []
+    for el in driver.find_elements(By.CSS_SELECTOR, selector):
+        try:
+            if el.is_displayed() and el.text.strip():
+                texts.append(" ".join(el.text.split())[:200])
+        except StaleElementReferenceException:
+            continue
+    return texts
+
+
 def wait_for_save(driver, editor_kind: str, wait: WebDriverWait) -> bool:
     try:
         if editor_kind == "classic":
@@ -384,6 +416,9 @@ def update_post(
     editor_kind = click_update_button(driver, wait)
     print(f"  clicked Update ({editor_kind} editor), waiting for save confirmation...", flush=True)
     saved = wait_for_save(driver, editor_kind, wait)
+    if not saved:
+        for text in visible_error_notices(driver):
+            print(f"  -> page shows: {text}", flush=True)
     if getattr(driver, "debug_auth", False):
         report_401s(driver)
     return saved, acf_ok
@@ -478,6 +513,7 @@ def main() -> int:
     wait = WebDriverWait(driver, 20)
 
     try:
+        prime_basic_auth(driver, base_url, basic_auth)
         apply_basic_auth(driver, basic_auth)
         login(driver, base_url, args.username, args.password, wait)
         print("Logged in.")

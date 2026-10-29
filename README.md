@@ -83,6 +83,13 @@ not embedded in the URL — modern Chrome blocks/strips `user:pass@host` URLs
 on top-level navigation as an anti-phishing measure, so that approach
 silently fails to authenticate.
 
+The header only covers the page's own requests. Web Workers (for example
+Yoast SEO's analysis worker on the edit screen) are separate browser targets
+that never receive it, so their requests reached the server unauthenticated
+and Chrome opened its own sign-in dialog. To prevent that, the script first
+does one navigation to a `user:pass@host` login URL, which seeds Chrome's
+native credential cache; Chrome then answers those challenges itself.
+
 ### WordPress in a subdirectory
 
 If the dashboard isn't at the site root — e.g. `https://example.com/wp/wp-admin/`
