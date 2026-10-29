@@ -75,6 +75,7 @@ def report_401s(driver) -> None:
     # completed Network.responseReceived, so match on the early ExtraInfo
     # events (which do fire for the 401 challenge) and join them by requestId.
     urls = driver.__dict__.setdefault("debug_request_urls", {})
+    pending = driver.__dict__.setdefault("debug_pending", {})
     sent_auth: dict[str, bool] = {}
     found = 0
     for entry in entries:
@@ -82,14 +83,31 @@ def report_401s(driver) -> None:
         method, params = message.get("method"), message.get("params", {})
         request_id = params.get("requestId")
         if method == "Network.requestWillBeSent":
-            urls[request_id] = params["request"]["url"]
+            req = params["request"]
+            urls[request_id] = req["url"]
+            pending[request_id] = f"{req['method']} {req['url']}"
+            if req["method"] != "GET":
+                print(f"  [debug-auth] {req['method']} {req['url']}", flush=True)
         elif method == "Network.requestWillBeSentExtraInfo":
             sent_auth[request_id] = any(k.lower() == "authorization" for k in params.get("headers", {}))
         elif method == "Network.responseReceivedExtraInfo" and params.get("statusCode") == 401:
             found += 1
             url = urls.get(request_id, "(unknown url)")
             print(f"  [debug-auth] 401 for {url} (Authorization sent: {sent_auth.get(request_id, 'unknown')})", flush=True)
+        elif method == "Network.responseReceived":
+            pending.pop(request_id, None)
+            status = params["response"].get("status")
+            if status and status >= 400:
+                print(f"  [debug-auth] HTTP {status} for {params['response']['url']}", flush=True)
+        elif method == "Network.loadingFinished":
+            pending.pop(request_id, None)
+        elif method == "Network.loadingFailed":
+            pending.pop(request_id, None)
+            print(f"  [debug-auth] FAILED {urls.get(request_id, '(unknown url)')}: "
+                  f"{params.get('errorText')} {params.get('blockedReason', '')}", flush=True)
     print(f"  [debug-auth] checked {len(entries)} network log entries, {found} were 401", flush=True)
+    for line in list(pending.values())[:10]:
+        print(f"  [debug-auth] still pending: {line}", flush=True)
 
 
 def build_driver(headless: bool, debug_auth: bool = False) -> webdriver.Chrome:
